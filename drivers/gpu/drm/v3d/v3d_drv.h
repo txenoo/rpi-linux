@@ -30,11 +30,40 @@ enum v3d_queue {
 
 #define V3D_MAX_QUEUES (V3D_CACHE_CLEAN + 1)
 
+static inline char *
+v3d_queue_to_string(enum v3d_queue queue)
+{
+	switch (queue) {
+		case V3D_BIN: return "v3d_bin";
+		case V3D_RENDER: return "v3d_render";
+		case V3D_TFU: return "v3d_tfu";
+		case V3D_CSD: return "v3d_csd";
+		case V3D_CACHE_CLEAN: return "v3d_cache_clean";
+	}
+	return "UNKNOWN";
+}
+
 struct v3d_queue_state {
 	struct drm_gpu_scheduler sched;
 
 	u64 fence_context;
 	u64 emit_seqno;
+};
+
+struct v3d_queue_stats {
+	u64 	last_exec_start;
+	u64 	last_exec_end;
+	u64 	runtime;
+	u32     jobs_sent;
+	pid_t   last_pid;
+};
+
+struct v3d_queue_pid_stats {
+	struct  list_head list;
+	u64 	runtime;
+	u64 	last_exec_start;
+	u32     jobs_sent;
+	pid_t   pid;
 };
 
 /* Performance monitor object. The perform lifetime is controlled by userspace
@@ -135,6 +164,9 @@ struct v3d_dev {
 	/* Protects bo_stats */
 	struct mutex bo_lock;
 
+	/* Protects gpu_stats log */
+	struct mutex gpu_stats_lock[V3D_MAX_QUEUES];
+
 	/* Lock taken when resetting the GPU, to keep multiple
 	 * processes from trying to park the scheduler threads and
 	 * reset at once.
@@ -156,6 +188,10 @@ struct v3d_dev {
 		u32 num_allocated;
 		u32 pages_allocated;
 	} bo_stats;
+
+	struct v3d_queue_stats gpu_queue_stats[V3D_MAX_QUEUES];
+	struct list_head gpu_queue_pid_stats[V3D_MAX_QUEUES];
+
 };
 
 static inline struct v3d_dev *
@@ -257,6 +293,8 @@ struct v3d_job {
 	 * NULL otherwise.
 	 */
 	struct v3d_perfmon *perfmon;
+
+	pid_t client_pid;
 
 	/* Callback for the freeing of the job on refcount going to 0. */
 	void (*free)(struct kref *ref);
@@ -406,6 +444,8 @@ void v3d_mmu_remove_ptes(struct v3d_bo *bo);
 /* v3d_sched.c */
 int v3d_sched_init(struct v3d_dev *v3d);
 void v3d_sched_fini(struct v3d_dev *v3d);
+int v3d_update_gpu_queue_stats(struct v3d_dev *v3d, enum v3d_queue queue,
+                               struct drm_sched_job *sched_job);
 
 /* v3d_perfmon.c */
 void v3d_perfmon_get(struct v3d_perfmon *perfmon);

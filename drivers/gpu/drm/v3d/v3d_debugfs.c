@@ -202,6 +202,36 @@ static int v3d_debugfs_bo_stats(struct seq_file *m, void *unused)
 	return 0;
 }
 
+static int v3d_debugfs_gpu_usage(struct seq_file *m, void *unused)
+{
+    struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct v3d_dev *v3d = to_v3d_dev(dev);
+	struct v3d_queue_pid_stats *cur;
+	enum v3d_queue queue;
+
+	seq_printf(m, "timestamp;%llu;\n", local_clock());
+	seq_printf(m, "\"QUEUE\";\"PID\",\"JOBS SENT\";\"RUNTIME (ns)\";\"ACTIVE\";\n");
+	for (queue=V3D_BIN; queue <= V3D_CSD; queue++) {
+		v3d_update_gpu_queue_stats(v3d, queue, NULL);
+
+		mutex_lock(&v3d->gpu_stats_lock[queue]);
+		seq_printf(m, "%s;ALL;%d;%llu;%c;\n",
+		           v3d_queue_to_string(queue),
+		           v3d->gpu_queue_stats[queue].jobs_sent,
+		           v3d->gpu_queue_stats[queue].runtime,
+		           v3d->gpu_queue_stats[queue].last_pid?'1':'0');
+		list_for_each_entry(cur, &v3d->gpu_queue_pid_stats[queue], list) {
+			seq_printf(m, "%s;%d;%d;%llu;%c;\n", v3d_queue_to_string(queue),
+			           cur->pid, cur->jobs_sent, cur->runtime,
+			           cur->pid==v3d->gpu_queue_stats[queue].last_pid?'1':'0');
+		}
+		mutex_unlock(&v3d->gpu_stats_lock[queue]);
+	}
+
+	return 0;
+}
+
 static int v3d_measure_clock(struct seq_file *m, void *unused)
 {
 	struct drm_info_node *node = (struct drm_info_node *)m->private;
@@ -242,6 +272,7 @@ static const struct drm_info_list v3d_debugfs_list[] = {
 	{"v3d_regs", v3d_v3d_debugfs_regs, 0},
 	{"measure_clock", v3d_measure_clock, 0},
 	{"bo_stats", v3d_debugfs_bo_stats, 0},
+	{"gpu_usage", v3d_debugfs_gpu_usage, 0},
 };
 
 void

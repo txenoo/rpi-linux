@@ -95,6 +95,64 @@ v3d_job_dependency(struct drm_sched_job *sched_job,
 	return NULL;
 }
 
+int
+v3d_update_gpu_queue_stats(struct v3d_dev *v3d, enum v3d_queue queue,
+                           struct drm_sched_job *sched_job) {
+	u64 runtime;
+	struct v3d_queue_pid_stats *pid_stats = NULL;
+	struct v3d_job *job = sched_job?to_v3d_job(sched_job):NULL;
+	int ret = 0;
+
+	mutex_lock(&v3d->gpu_stats_lock[queue]);
+	if (v3d->gpu_queue_stats[queue].last_pid &&
+	    v3d->gpu_queue_stats[queue].last_exec_end) {
+		runtime = v3d->gpu_queue_stats[queue].last_exec_end -
+		          v3d->gpu_queue_stats[queue].last_exec_start;
+		v3d->gpu_queue_stats[queue].runtime += runtime;
+		pid_stats = list_first_entry_or_null(&v3d->gpu_queue_pid_stats[queue],
+		                                     struct v3d_queue_pid_stats, list);
+		if (pid_stats &&
+		    pid_stats->pid == v3d->gpu_queue_stats[queue].last_pid) {
+				pid_stats->runtime += runtime;
+		}
+		v3d->gpu_queue_stats[queue].last_pid = 0;
+	}
+	if (job) {
+		v3d->gpu_queue_stats[queue].last_exec_start = local_clock();
+		v3d->gpu_queue_stats[queue].last_exec_end = 0;
+		v3d->gpu_queue_stats[queue].jobs_sent++;
+		v3d->gpu_queue_stats[queue].last_pid = job->client_pid;
+		if (!pid_stats || pid_stats->pid != job->client_pid) {
+			struct v3d_queue_pid_stats *cur;
+			pid_stats = NULL;
+			list_for_each_entry(cur, &v3d->gpu_queue_pid_stats[queue], list) {
+				if (cur->pid == job->client_pid) {
+					pid_stats = cur;
+					break;
+				}
+			}
+			if (pid_stats) {
+				list_move(&pid_stats->list, &v3d->gpu_queue_pid_stats[queue]);
+			} else {
+				pid_stats = kzalloc(sizeof(struct v3d_queue_pid_stats), GFP_KERNEL);
+				if (!pid_stats) {
+					ret = -ENOMEM;
+					goto err_mem;
+				}
+				pid_stats->pid = job->client_pid;
+				list_add(&pid_stats->list,&v3d->gpu_queue_pid_stats[queue]);
+			}
+		}
+		pid_stats->jobs_sent++;
+		pid_stats->last_exec_start = v3d->gpu_queue_stats[queue].last_exec_start;
+	}
+err_mem:
+	mutex_unlock(&v3d->gpu_stats_lock[queue]);
+
+	return ret;
+}
+
+
 static struct dma_fence *v3d_bin_job_run(struct drm_sched_job *sched_job)
 {
 	struct v3d_bin_job *job = to_bin_job(sched_job);
@@ -130,6 +188,7 @@ static struct dma_fence *v3d_bin_job_run(struct drm_sched_job *sched_job)
 	trace_v3d_submit_cl(dev, false, to_v3d_fence(fence)->seqno,
 			    job->start, job->end);
 
+	v3d_update_gpu_queue_stats(v3d, V3D_BIN, sched_job);
 	v3d_switch_perfmon(v3d, &job->base);
 
 	/* Set the current and end address of the control list.
@@ -181,6 +240,7 @@ static struct dma_fence *v3d_render_job_run(struct drm_sched_job *sched_job)
 	trace_v3d_submit_cl(dev, true, to_v3d_fence(fence)->seqno,
 			    job->start, job->end);
 
+	v3d_update_gpu_queue_stats(v3d, V3D_RENDER, sched_job);
 	v3d_switch_perfmon(v3d, &job->base);
 
 	/* XXX: Set the QCFG */
@@ -212,6 +272,8 @@ v3d_tfu_job_run(struct drm_sched_job *sched_job)
 	job->base.irq_fence = dma_fence_get(fence);
 
 	trace_v3d_submit_tfu(dev, to_v3d_fence(fence)->seqno);
+
+	v3d_update_gpu_queue_stats(v3d, V3D_TFU, sched_job);
 
 	V3D_WRITE(V3D_TFU_IIA, job->args.iia);
 	V3D_WRITE(V3D_TFU_IIS, job->args.iis);
@@ -254,6 +316,7 @@ v3d_csd_job_run(struct drm_sched_job *sched_job)
 
 	trace_v3d_submit_csd(dev, to_v3d_fence(fence)->seqno);
 
+	v3d_update_gpu_queue_stats(v3d, V3D_CSD, sched_job);
 	v3d_switch_perfmon(v3d, &job->base);
 
 	for (i = 1; i <= 6; i++)
