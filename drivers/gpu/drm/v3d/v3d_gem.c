@@ -487,6 +487,7 @@ v3d_job_init(struct v3d_dev *v3d, struct drm_file *file_priv,
 
 	job->v3d = v3d;
 	job->free = free;
+	job->client_pid = current->pid;
 
 	xa_init_flags(&job->deps, XA_FLAGS_ALLOC);
 
