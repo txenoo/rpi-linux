@@ -202,6 +202,68 @@ static int v3d_debugfs_bo_stats(struct seq_file *m, void *unused)
 	return 0;
 }
 
+static int v3d_debugfs_gpu_usage(struct seq_file *m, void *unused)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct v3d_dev *v3d = to_v3d_dev(dev);
+	struct v3d_queue_stats *queue_stats;
+	enum v3d_queue queue;
+
+	seq_printf(m, "timestamp;%llu;\n", local_clock());
+	seq_printf(m, "\"QUEUE\";\"JOBS\";\"RUNTIME\";\"ACTIVE\";\n");
+	for (queue=0; queue < V3D_MAX_QUEUES; queue++) {
+
+		if (!v3d->queue[queue].sched.ready)
+			continue;
+
+		queue_stats = &v3d->gpu_queue_stats[queue];
+		mutex_lock(&queue_stats->lock);
+		v3d_sched_stats_update(queue_stats);
+		seq_printf(m, "%s;%d;%llu;%c;\n",
+			   v3d_queue_to_string(queue),
+			   queue_stats->jobs_sent,
+			   queue_stats->runtime,
+			   queue_stats->last_pid?'1':'0');
+		mutex_unlock(&queue_stats->lock);
+	}
+
+	return 0;
+}
+
+static int v3d_debugfs_gpu_pid_usage(struct seq_file *m, void *unused)
+{
+	struct drm_info_node *node = (struct drm_info_node *)m->private;
+	struct drm_device *dev = node->minor->dev;
+	struct v3d_dev *v3d = to_v3d_dev(dev);
+	struct v3d_queue_stats *queue_stats;
+	struct v3d_queue_pid_stats *cur;
+	enum v3d_queue queue;
+
+	seq_printf(m, "timestamp;%llu;\n", local_clock());
+	seq_printf(m, "\"QUEUE\";\"PID\",\"JOBS\";\"RUNTIME\";\"ACTIVE\";\n");
+	for (queue=0; queue < V3D_MAX_QUEUES; queue++) {
+
+		if (!v3d->queue[queue].sched.ready)
+			continue;
+
+		queue_stats = &v3d->gpu_queue_stats[queue];
+		mutex_lock(&queue_stats->lock);
+		queue_stats->gpu_pid_stats_timeout = jiffies + V3D_QUEUE_STATS_TIMEOUT;
+		v3d_sched_stats_update(queue_stats);
+		list_for_each_entry(cur, &queue_stats->pid_stats_list, list) {
+			seq_printf(m, "%s;%d;%d;%llu;%c;\n",
+				   v3d_queue_to_string(queue),
+				   cur->pid, cur->jobs_sent,
+				   cur->runtime,
+				   cur->pid==queue_stats->last_pid?'1':'0');
+		}
+		mutex_unlock(&queue_stats->lock);
+	}
+
+	return 0;
+}
+
 static int v3d_measure_clock(struct seq_file *m, void *unused)
 {
 	struct drm_info_node *node = (struct drm_info_node *)m->private;
@@ -242,6 +304,8 @@ static const struct drm_info_list v3d_debugfs_list[] = {
 	{"v3d_regs", v3d_v3d_debugfs_regs, 0},
 	{"measure_clock", v3d_measure_clock, 0},
 	{"bo_stats", v3d_debugfs_bo_stats, 0},
+	{"gpu_usage", v3d_debugfs_gpu_usage, 0},
+	{"gpu_pid_usage", v3d_debugfs_gpu_pid_usage, 0},
 };
 
 void
